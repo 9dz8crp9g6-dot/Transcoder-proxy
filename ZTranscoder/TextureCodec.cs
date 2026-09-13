@@ -391,7 +391,18 @@ internal static class TextureCodec
         if (!ok)
             throw new InvalidDataException($"Kyaru Texture2DDecoder failed to decode {(isDxt5 ? "DXT5" : "DXT1")}");
 
+        if (!isDxt5)
+            SwapGreenBlue(rgba);
+
         return rgba;
+    }
+
+    private static void SwapGreenBlue(byte[] rgba)
+    {
+        for (int i = 0; i + 3 < rgba.Length; i += 4)
+        {
+            (rgba[i + 1], rgba[i + 2]) = (rgba[i + 2], rgba[i + 1]);
+        }
     }
 
     private static byte[] DecodeKyaruDXTCrunched(byte[] encodedData, int width, int height, bool isDxt5)
