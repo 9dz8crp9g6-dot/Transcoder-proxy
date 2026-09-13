@@ -218,18 +218,34 @@ internal static class Carra2Mode
                         AssetTypeValueField texBase = manager.GetBaseField(afileInst, texInfo);
                         int targetFormat = opt.NewTextureFormat ?? texBase["m_TextureFormat"].AsInt;
 
+                        int origWidth = texBase["m_Width"].AsInt;
+                        int origHeight = texBase["m_Height"].AsInt;
+                        int finalWidth = origWidth > 0 ? origWidth : width;
+                        int finalHeight = origHeight > 0 ? origHeight : height;
+
                         byte[] rgba32 = TextureCodec.DecodeToRgba32(pixelData, width, height, format, texName);
-                        byte[] encoded = TextureCodec.EncodeFromRgba32(rgba32, width, height, targetFormat, texName);
+
+                        if (finalWidth != width || finalHeight != height)
+                        {
+                            Console.WriteLine(
+                                $"[{dirInfo.Name}] Texture2D '{texName}' PathId {kv.Key}: mod payload is " +
+                                $"{width}x{height}, but the original bundle texture is {finalWidth}x{finalHeight} - " +
+                                "resampling to match the original resolution.");
+                            rgba32 = TextureCodec.ResampleBilinear(rgba32, width, height, finalWidth, finalHeight);
+                        }
+
+                        byte[] encoded = TextureCodec.EncodeFromRgba32(rgba32, finalWidth, finalHeight, targetFormat, texName);
 
                         Console.WriteLine(
                             $"[{dirInfo.Name}] Texture2D '{texName}' PathId {kv.Key}: {width}x{height} " +
-                            $"{TextureCodec.FormatName(format)} (dataSize={dataSize:N0}) -> {TextureCodec.FormatName(targetFormat)}.");
+                            $"{TextureCodec.FormatName(format)} (dataSize={dataSize:N0}) -> {finalWidth}x{finalHeight} " +
+                            $"{TextureCodec.FormatName(targetFormat)}.");
 
                         if (!opt.DryRun)
                         {
                             texBase["m_TextureFormat"].AsInt = targetFormat;
-                            texBase["m_Width"].AsInt = width;
-                            texBase["m_Height"].AsInt = height;
+                            texBase["m_Width"].AsInt = finalWidth;
+                            texBase["m_Height"].AsInt = finalHeight;
                             texBase["m_MipCount"].AsInt = 1;
                             texBase["m_CompleteImageSize"].AsInt = encoded.Length;
 

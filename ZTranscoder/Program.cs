@@ -5,9 +5,6 @@ using System.IO;
 using AssetsTools.NET;
 using AssetsTools.NET.Extra;
 using AssetsTools.NET.Texture;
-using AstcSharp;
-using AstcSharp.Core;
-using Texture2DDecoder;
 
 internal static class Program
 {
@@ -93,7 +90,7 @@ internal static class Program
             ParseOutputTextureFormat(outputFormatName, kDefaultOutputTextureFormat);
 
         Console.WriteLine(
-            $"[config] OutputTextureFormat={FormatName(outputTextureFormat)} ({outputTextureFormat})");
+            $"[config] OutputTextureFormat={TextureCodec.FormatName(outputTextureFormat)} ({outputTextureFormat})");
 
         var manager = new AssetsManager();
         if (tpkPath != null)
@@ -311,52 +308,9 @@ internal static class Program
                 byte[] encodedData = tf.FillPictureData(afileInst)
                     ?? throw new InvalidDataException($"could not load texture data for '{texName}'");
 
-                byte[] rgba32;
-                switch (format)
-                {
-                    case kFmtRGB24:
-                        rgba32 = DecodeRGB24(encodedData, width, height);
-                        break;
+                byte[] rgba32 = TextureCodec.DecodeToRgba32(encodedData, width, height, format, texName);
 
-                    case kFmtRGBA32:
-                        int expectedRgbaBytes = checked(width * height * 4);
-                        if (encodedData.Length < expectedRgbaBytes)
-                        {
-                            throw new InvalidDataException(
-                                $"RGBA32 data too small for '{texName}': got {encodedData.Length}, " +
-                                $"expected at least {expectedRgbaBytes}");
-                        }
-
-                        rgba32 = new byte[expectedRgbaBytes];
-                        Buffer.BlockCopy(encodedData, 0, rgba32, 0, expectedRgbaBytes);
-                        break;
-
-                    case kFmtDXT1:
-                        rgba32 = DecodeKyaruDXT(encodedData, width, height, isDxt5: false);
-                        break;
-
-                    case kFmtDXT5:
-                        rgba32 = DecodeKyaruDXT(encodedData, width, height, isDxt5: true);
-                        break;
-
-                    case kFmtDXT5Crunched:
-                        rgba32 = DecodeKyaruDXT5Crunched(encodedData, width, height);
-                        break;
-
-                    default:
-                        throw new InvalidOperationException(
-                            $"conversion dispatch missing for texture format {format} ('{texName}')");
-                }
-
-                int expectedDecodedSize = checked(width * height * 4);
-                if (rgba32.Length != expectedDecodedSize)
-                {
-                    throw new InvalidDataException(
-                        $"decoded RGBA size mismatch for '{texName}' (format {format}): " +
-                        $"got {rgba32.Length}, expected {expectedDecodedSize}");
-                }
-
-                byte[] outputData = EncodeOutputTexture(
+                byte[] outputData = TextureCodec.EncodeFromRgba32(
                     rgba32,
                     width,
                     height,
@@ -364,8 +318,8 @@ internal static class Program
                     texName);
 
                 Console.WriteLine(
-                    $"[Texture] '{texName}' {width}x{height}: format {format} -> " +
-                    $"{FormatName(outputTextureFormat)} ({outputTextureFormat}), " +
+                    $"[Texture] '{texName}' {width}x{height}: format {TextureCodec.FormatName(format)} ({format}) -> " +
+                    $"{TextureCodec.FormatName(outputTextureFormat)} ({outputTextureFormat}), " +
                     $"{encodedData.Length:N0} -> {outputData.Length:N0} bytes");
 
                 baseField["m_TextureFormat"].AsInt = outputTextureFormat;
@@ -564,24 +518,17 @@ internal static class Program
         return 0;
     }
 
-    private static bool NeedsConversion(int format) => format switch
+    private static readonly HashSet<int> kFormatsAlreadyNativeOnIos = new()
     {
-
-        kFmtRGB24 => true,
-        kFmtDXT1 => true,
-        kFmtDXT5 => true,
-        kFmtDXT5Crunched => true,
-
-        kFmtETC2_RGB => false,
-        kFmtETC2_RGBA8 => false,
-        kFmtASTC_RGBA_4x4 => false,
-        kFmtASTC_RGBA_6x6 => false,
-        kFmtASTC_RGBA_8x8 => false,
-        kFmtRGBA32 => false,
-
-        _ => throw new NotSupportedException(
-            $"texture format {format} has no conversion rule; failing closed rather than guessing")
+        kFmtETC2_RGB,
+        kFmtETC2_RGBA8,
+        kFmtASTC_RGBA_4x4,
+        kFmtASTC_RGBA_6x6,
+        kFmtASTC_RGBA_8x8,
+        kFmtRGBA32,
     };
+
+    private static bool NeedsConversion(int format) => !kFormatsAlreadyNativeOnIos.Contains(format);
 
     private static bool IsOutputTextureFormatName(string value)
     {
@@ -637,156 +584,6 @@ internal static class Program
                 $"Unknown output texture format '{value}'. " +
                 "Use RGBA32, ETC2, ETC2_RGB, ETC2_RGBA8, ASTC_RGBA_4x4, ASTC_RGBA_6x6, or ASTC_RGBA_8x8.")
         };
-    }
-
-    private static string FormatName(int format) => format switch
-    {
-        kFmtRGBA32 => "RGBA32",
-        kFmtETC2_RGB => "ETC2_RGB",
-        kFmtETC2_RGBA8 => "ETC2_RGBA8",
-        kFmtASTC_RGBA_4x4 => "ASTC_RGBA_4x4",
-        kFmtASTC_RGBA_6x6 => "ASTC_RGBA_6x6",
-        kFmtASTC_RGBA_8x8 => "ASTC_RGBA_8x8",
-        _ => $"Format{format}"
-    };
-
-    private static byte[] EncodeOutputTexture(
-        byte[] rgba32,
-        int width,
-        int height,
-        int outputFormat,
-        string texName)
-    {
-        switch (outputFormat)
-        {
-            case kFmtRGBA32:
-
-                return rgba32;
-
-            case kFmtASTC_RGBA_4x4:
-                return EncodeAstc(
-                    rgba32,
-                    width,
-                    height,
-                    FootprintType.Footprint4x4,
-                    outputFormat,
-                    texName);
-
-            case kFmtASTC_RGBA_6x6:
-                return EncodeAstc(
-                    rgba32,
-                    width,
-                    height,
-                    FootprintType.Footprint6x6,
-                    outputFormat,
-                    texName);
-
-            case kFmtASTC_RGBA_8x8:
-                return EncodeAstc(
-                    rgba32,
-                    width,
-                    height,
-                    FootprintType.Footprint8x8,
-                    outputFormat,
-                    texName);
-
-            case kFmtETC2_RGB:
-            case kFmtETC2_RGBA8:
-                return Etc2Encoder.Encode(rgba32, width, height, outputFormat, texName);
-
-            default:
-                throw new NotSupportedException(
-                    $"Output texture format {outputFormat} is not implemented.");
-        }
-    }
-
-    private static byte[] EncodeAstc(
-        byte[] rgba32,
-        int width,
-        int height,
-        FootprintType footprintType,
-        int outputFormat,
-        string texName)
-    {
-        int blockWidth = footprintType switch
-        {
-            FootprintType.Footprint4x4 => 4,
-            FootprintType.Footprint6x6 => 6,
-            FootprintType.Footprint8x8 => 8,
-            _ => throw new ArgumentOutOfRangeException(nameof(footprintType), $"Unsupported ASTC footprint {footprintType}")
-        };
-
-        return NativeAstcEncoder.Encode(rgba32, width, height, blockWidth, blockWidth, texName);
-    }
-
-    private static byte[] DecodeRGB24(byte[] data, int width, int height)
-    {
-        int pixelCount = checked(width * height);
-        int expected = checked(pixelCount * 3);
-        if (data.Length < expected)
-            throw new InvalidDataException(
-                $"RGB24 data too small: got {data.Length}, expected at least {expected}");
-
-        var rgba = new byte[pixelCount * 4];
-        for (int i = 0, src = 0, dst = 0; i < pixelCount; i++, src += 3, dst += 4)
-        {
-            rgba[dst + 0] = data[src + 0];
-            rgba[dst + 1] = data[src + 1];
-            rgba[dst + 2] = data[src + 2];
-            rgba[dst + 3] = 255;
-        }
-        return rgba;
-    }
-
-    private static byte[] DecodeKyaruDXT(byte[] encodedData, int width, int height, bool isDxt5)
-    {
-        int outputSize = checked(width * height * 4);
-        var bgra = new byte[outputSize];
-
-        bool ok = isDxt5
-            ? TextureDecoder.DecodeDXT5(encodedData, width, height, bgra)
-            : TextureDecoder.DecodeDXT1(encodedData, width, height, bgra);
-
-        if (!ok)
-        {
-            throw new InvalidDataException(
-                $"Kyaru Texture2DDecoder failed to decode {(isDxt5 ? "DXT5" : "DXT1")}");
-        }
-
-        return BgraToRgba(bgra);
-    }
-
-    private static byte[] DecodeKyaruDXT5Crunched(byte[] encodedData, int width, int height)
-    {
-
-        byte[]? unpacked = TextureDecoder.UnpackUnityCrunch(encodedData);
-        if (unpacked == null || unpacked.Length == 0)
-            throw new InvalidDataException("Kyaru Texture2DDecoder failed to unpack UnityCrunch DXT5 data");
-
-        int outputSize = checked(width * height * 4);
-        var bgra = new byte[outputSize];
-        if (!TextureDecoder.DecodeDXT5(unpacked, width, height, bgra))
-            throw new InvalidDataException("Kyaru Texture2DDecoder failed to decode unpacked UnityCrunch DXT5 data");
-
-        return BgraToRgba(bgra);
-    }
-
-    private static byte[] EncodeAstc6x6(byte[] rgba32, int width, int height)
-    {
-        return NativeAstcEncoder.Encode(rgba32, width, height, blockWidth: 6, blockHeight: 6, texName: "<EncodeAstc6x6>");
-    }
-
-    private static byte[] BgraToRgba(byte[] bgra)
-    {
-        var rgba = new byte[bgra.Length];
-        for (int i = 0; i < bgra.Length; i += 4)
-        {
-            rgba[i + 0] = bgra[i + 2];
-            rgba[i + 1] = bgra[i + 1];
-            rgba[i + 2] = bgra[i + 0];
-            rgba[i + 3] = bgra[i + 3];
-        }
-        return rgba;
     }
 
     private static bool LooksLikeSerializedFile(string name) =>

@@ -1,5 +1,6 @@
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using AstcSharp;
 using AstcSharp.Core;
@@ -19,6 +20,13 @@ internal static class TextureCodec
     public const int FmtASTC_RGBA_6x6 = 50;
     public const int FmtASTC_RGBA_8x8 = 51;
 
+    private static readonly Dictionary<int, FootprintType> AstcFootprintsByFormat = new()
+    {
+        [FmtASTC_RGBA_4x4] = FootprintType.Footprint4x4,
+        [FmtASTC_RGBA_6x6] = FootprintType.Footprint6x6,
+        [FmtASTC_RGBA_8x8] = FootprintType.Footprint8x8,
+    };
+
     public static string FormatName(int format) => format switch
     {
         FmtRGB24 => "RGB24",
@@ -36,24 +44,13 @@ internal static class TextureCodec
 
     public static byte[] DecodeToRgba32(byte[] encodedData, int width, int height, int format, string texName)
     {
+        if (width <= 0 || height <= 0)
+            throw new InvalidDataException($"invalid dimensions for '{texName}': {width}x{height}");
+
         switch (format)
         {
-            case FmtRGB24:
-                return DecodeRGB24(encodedData, width, height);
-
-            case FmtRGBA32:
-            {
-                int expected = checked(width * height * 4);
-                if (encodedData.Length < expected)
-                    throw new InvalidDataException(
-                        $"RGBA32 data too small for '{texName}': got {encodedData.Length}, expected at least {expected}");
-                var rgba = new byte[expected];
-                Buffer.BlockCopy(encodedData, 0, rgba, 0, expected);
-                return rgba;
-            }
-
             case FmtDXT1:
-                return DecodeDXT1Managed(encodedData, width, height);
+                return DecodeKyaruDXT(encodedData, width, height, isDxt5: false);
 
             case FmtDXT5:
                 return DecodeKyaruDXT(encodedData, width, height, isDxt5: true);
@@ -67,20 +64,49 @@ internal static class TextureCodec
             case FmtETC2_RGBA8:
                 return DecodeKyaruETC2(encodedData, width, height, hasAlpha: true);
 
-            case FmtASTC_RGBA_4x4:
-                return DecodeAstc(encodedData, width, height, FootprintType.Footprint4x4, texName);
+            case FmtRGBA32:
+            {
+                int expected = checked(width * height * 4);
+                if (encodedData.Length < expected)
+                    throw new InvalidDataException(
+                        $"RGBA32 data too small for '{texName}': got {encodedData.Length}, expected at least {expected}");
+                var rgba = new byte[expected];
+                Buffer.BlockCopy(encodedData, 0, rgba, 0, expected);
+                return rgba;
+            }
 
-            case FmtASTC_RGBA_6x6:
-                return DecodeAstc(encodedData, width, height, FootprintType.Footprint6x6, texName);
-
-            case FmtASTC_RGBA_8x8:
-                return DecodeAstc(encodedData, width, height, FootprintType.Footprint8x8, texName);
-
-            default:
-                throw new NotSupportedException(
-                    $"TextureCodec has no decoder for format {format} ('{texName}'); " +
-                    "failing closed rather than assuming the pixels are unchanged.");
+            case FmtRGB24:
+                return DecodeRGB24(encodedData, width, height);
         }
+
+        if (AstcFootprintsByFormat.TryGetValue(format, out FootprintType footprint))
+            return DecodeAstc(encodedData, width, height, footprint, texName);
+
+        return DecodeViaGenericAssetsToolsDecoder(encodedData, width, height, format, texName);
+    }
+
+    private static byte[] DecodeViaGenericAssetsToolsDecoder(byte[] encodedData, int width, int height, int format, string texName)
+    {
+        byte[]? bgra;
+        try
+        {
+            bgra = AssetsTools.NET.Texture.TextureFile.GetTextureDataFromBytes(
+                encodedData, (AssetsTools.NET.Texture.TextureFormat)format, width, height);
+        }
+        catch (Exception ex)
+        {
+            throw new NotSupportedException(
+                $"TextureCodec has no dedicated decoder for format {format} ('{FormatName(format)}', texture '{texName}'), " +
+                $"and the generic AssetsTools.NET decoder could not handle it either: {ex.Message}", ex);
+        }
+
+        int expected = checked(width * height * 4);
+        if (bgra == null || bgra.Length != expected)
+            throw new InvalidDataException(
+                $"generic decode of format {format} ('{FormatName(format)}', texture '{texName}') produced " +
+                $"{(bgra?.Length ?? 0):N0} bytes, expected {expected:N0}");
+
+        return BgraToRgba(bgra);
     }
 
     public static byte[] EncodeFromRgba32(byte[] rgba32, int width, int height, int outputFormat, string texName)
@@ -126,103 +152,6 @@ internal static class TextureCodec
             rgba[dst + 3] = 255;
         }
         return rgba;
-    }
-
-    private static byte[] DecodeDXT1Managed(byte[] data, int width, int height)
-    {
-        var rgba = new byte[checked(width * height * 4)];
-        int blocksWide = (width + 3) / 4;
-        int blocksHigh = (height + 3) / 4;
-
-        int expected = checked(blocksWide * blocksHigh * 8);
-        if (data.Length < expected)
-            throw new InvalidDataException(
-                $"DXT1 data too small: got {data.Length}, expected at least {expected}");
-
-        for (int by = 0; by < blocksHigh; by++)
-        {
-            for (int bx = 0; bx < blocksWide; bx++)
-            {
-                int blockOffset = (by * blocksWide + bx) * 8;
-
-                ushort c0 = (ushort)(data[blockOffset] | (data[blockOffset + 1] << 8));
-                ushort c1 = (ushort)(data[blockOffset + 2] | (data[blockOffset + 3] << 8));
-                uint indices = (uint)(data[blockOffset + 4]
-                    | (data[blockOffset + 5] << 8)
-                    | (data[blockOffset + 6] << 16)
-                    | (data[blockOffset + 7] << 24));
-
-                Unpack565(c0, out byte r0, out byte g0, out byte b0);
-                Unpack565(c1, out byte r1, out byte g1, out byte b1);
-
-                byte r2, g2, b2, a2, r3, g3, b3, a3;
-                if (c0 > c1)
-                {
-                    r2 = (byte)((2 * r0 + r1) / 3);
-                    g2 = (byte)((2 * g0 + g1) / 3);
-                    b2 = (byte)((2 * b0 + b1) / 3);
-                    a2 = 255;
-                    r3 = (byte)((r0 + 2 * r1) / 3);
-                    g3 = (byte)((g0 + 2 * g1) / 3);
-                    b3 = (byte)((b0 + 2 * b1) / 3);
-                    a3 = 255;
-                }
-                else
-                {
-                    r2 = (byte)((r0 + r1) / 2);
-                    g2 = (byte)((g0 + g1) / 2);
-                    b2 = (byte)((b0 + b1) / 2);
-                    a2 = 255;
-                    r3 = 0;
-                    g3 = 0;
-                    b3 = 0;
-                    a3 = 0;
-                }
-
-                for (int py = 0; py < 4; py++)
-                {
-                    int y = by * 4 + py;
-                    if (y >= height) continue;
-
-                    for (int px = 0; px < 4; px++)
-                    {
-                        int x = bx * 4 + px;
-                        if (x >= width) continue;
-
-                        int pixelIndex = py * 4 + px;
-                        int code = (int)((indices >> (pixelIndex * 2)) & 0x3);
-
-                        byte r, g, b, a;
-                        switch (code)
-                        {
-                            case 0: r = r0; g = g0; b = b0; a = 255; break;
-                            case 1: r = r1; g = g1; b = b1; a = 255; break;
-                            case 2: r = r2; g = g2; b = b2; a = a2; break;
-                            default: r = r3; g = g3; b = b3; a = a3; break;
-                        }
-
-                        int dst = (y * width + x) * 4;
-                        rgba[dst + 0] = r;
-                        rgba[dst + 1] = g;
-                        rgba[dst + 2] = b;
-                        rgba[dst + 3] = a;
-                    }
-                }
-            }
-        }
-
-        return rgba;
-    }
-
-    private static void Unpack565(ushort c, out byte r, out byte g, out byte b)
-    {
-        int r5 = (c >> 11) & 0x1F;
-        int g6 = (c >> 5) & 0x3F;
-        int b5 = c & 0x1F;
-
-        r = (byte)((r5 << 3) | (r5 >> 2));
-        g = (byte)((g6 << 2) | (g6 >> 4));
-        b = (byte)((b5 << 3) | (b5 >> 2));
     }
 
     private static byte[] DecodeKyaruDXT(byte[] encodedData, int width, int height, bool isDxt5)
