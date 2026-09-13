@@ -37,7 +37,7 @@ internal static class Etc2Encoder
         if (!process.Start())
             throw new InvalidOperationException($"failed to start vendored etcpak ETC2 encoder '{encoderPath}'");
 
-        byte[] bgra32 = RgbaToBgra(rgba32);
+        byte[] bgra32 = ChannelSwizzle.ConvertFromRgba(rgba32, ChannelLayout.Bgra);
 
         using (process.StandardInput.BaseStream)
         {
@@ -110,19 +110,6 @@ internal static class Etc2Encoder
         using var output = new MemoryStream();
         stream.CopyTo(output);
         return output.ToArray();
-    }
-
-    private static byte[] RgbaToBgra(byte[] rgba)
-    {
-        var bgra = new byte[rgba.Length];
-        for (int i = 0; i < rgba.Length; i += 4)
-        {
-            bgra[i + 0] = rgba[i + 2];
-            bgra[i + 1] = rgba[i + 1];
-            bgra[i + 2] = rgba[i + 0];
-            bgra[i + 3] = rgba[i + 3];
-        }
-        return bgra;
     }
 
     private static void WriteUInt32LE(Span<byte> destination, uint value)

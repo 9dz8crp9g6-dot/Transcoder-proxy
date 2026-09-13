@@ -53,6 +53,46 @@ internal static class TextureCodec
         [FmtASTC_RGBA_8x8] = FootprintType.Footprint8x8,
     };
 
+    private static readonly HashSet<int> KyaruNativeBgraFormats = new()
+    {
+        FmtDXT5,
+        FmtDXT5Crunched,
+        FmtETC2_RGB,
+        FmtETC2_RGBA8,
+        FmtETC_RGB4Crunched,
+        FmtETC2_RGBA8Crunched,
+        FmtETC_RGB4,
+        FmtETC2_RGBA1,
+        FmtEAC_R,
+        FmtEAC_R_SIGNED,
+        FmtATC_RGB4,
+        FmtATC_RGBA8,
+        FmtBC4,
+        FmtBC5,
+        FmtBC6H,
+        FmtBC7,
+        FmtPVRTC_RGB2,
+        FmtPVRTC_RGBA2,
+        FmtPVRTC_RGB4,
+        FmtPVRTC_RGBA4,
+    };
+
+    private static readonly Dictionary<int, ChannelLayout> NativeChannelLayoutByFormat = BuildNativeChannelLayoutTable();
+
+    private static Dictionary<int, ChannelLayout> BuildNativeChannelLayoutTable()
+    {
+        var table = new Dictionary<int, ChannelLayout>
+        {
+            [FmtBGRA32] = ChannelLayout.Bgra,
+            [FmtARGB32] = ChannelLayout.Argb,
+        };
+
+        foreach (int format in KyaruNativeBgraFormats)
+            table[format] = ChannelLayout.Bgra;
+
+        return table;
+    }
+
     private delegate bool KyaruDecodeFunc(ReadOnlySpan<byte> data, int width, int height, Span<byte> image);
 
     private static readonly Dictionary<int, KyaruDecodeFunc> KyaruDecodersByFormat = new()
@@ -93,6 +133,16 @@ internal static class TextureCodec
         if (width <= 0 || height <= 0)
             throw new InvalidDataException($"invalid dimensions for '{texName}': {width}x{height}");
 
+        byte[] pixels = DecodeNative(encodedData, width, height, format, texName);
+        ChannelLayout layout = NativeChannelLayoutByFormat.TryGetValue(format, out ChannelLayout mapped)
+            ? mapped
+            : ChannelLayout.Rgba;
+
+        return ChannelSwizzle.ConvertToRgba(pixels, layout);
+    }
+
+    private static byte[] DecodeNative(byte[] encodedData, int width, int height, int format, string texName)
+    {
         switch (format)
         {
             case FmtDXT1:
@@ -177,10 +227,9 @@ internal static class TextureCodec
         if (encodedData.Length < expected)
             throw new InvalidDataException(
                 $"BGRA32 data too small for '{texName}': got {encodedData.Length}, expected at least {expected}");
-        var rgba = new byte[expected];
-        Buffer.BlockCopy(encodedData, 0, rgba, 0, expected);
-        SwapRedBlue(rgba);
-        return rgba;
+        var bgra = new byte[expected];
+        Buffer.BlockCopy(encodedData, 0, bgra, 0, expected);
+        return bgra;
     }
 
     private static byte[] DecodeAlpha8(byte[] data, int width, int height)
@@ -251,22 +300,13 @@ internal static class TextureCodec
 
     private static byte[] DecodeArgb32(byte[] data, int width, int height)
     {
-        int pixelCount = checked(width * height);
-        int expected = checked(pixelCount * 4);
+        int expected = checked(width * height * 4);
         if (data.Length < expected)
             throw new InvalidDataException($"ARGB32 data too small: got {data.Length}, expected at least {expected}");
 
-        var rgba = new byte[expected];
-        for (int i = 0; i < pixelCount; i++)
-        {
-            int src = i * 4;
-            int dst = i * 4;
-            rgba[dst + 0] = data[src + 1];
-            rgba[dst + 1] = data[src + 2];
-            rgba[dst + 2] = data[src + 3];
-            rgba[dst + 3] = data[src + 0];
-        }
-        return rgba;
+        var argb = new byte[expected];
+        Buffer.BlockCopy(data, 0, argb, 0, expected);
+        return argb;
     }
 
     private static byte[] DecodeArgb4444(byte[] data, int width, int height)
@@ -323,7 +363,6 @@ internal static class TextureCodec
         if (!decodeFunc(encodedData, width, height, rgba))
             throw new InvalidDataException($"Kyaru Texture2DDecoder failed to decode {formatLabel}");
 
-        SwapRedBlue(rgba);
         return rgba;
     }
 
@@ -492,16 +531,7 @@ internal static class TextureCodec
         if (!TextureDecoder.DecodeDXT5(encodedData, width, height, rgba))
             throw new InvalidDataException("Kyaru Texture2DDecoder failed to decode DXT5");
 
-        SwapRedBlue(rgba);
         return rgba;
-    }
-
-    private static void SwapRedBlue(byte[] rgba)
-    {
-        for (int i = 0; i + 3 < rgba.Length; i += 4)
-        {
-            (rgba[i + 0], rgba[i + 2]) = (rgba[i + 2], rgba[i + 0]);
-        }
     }
 
     private static byte[] DecodeKyaruDXT5Crunched(byte[] encodedData, int width, int height)
@@ -527,7 +557,6 @@ internal static class TextureCodec
             throw new InvalidDataException(
                 $"Kyaru Texture2DDecoder failed to decode {(hasAlpha ? "ETC2_RGBA8" : "ETC2_RGB")}");
 
-        SwapRedBlue(rgba);
         return rgba;
     }
 
