@@ -96,16 +96,16 @@ internal static class TextureCodec
         switch (format)
         {
             case FmtDXT1:
-                return DecodeKyaruDXT(encodedData, width, height, isDxt5: false);
+                return DecodeBC1(encodedData, width, height);
 
             case FmtDXT5:
-                return DecodeKyaruDXT(encodedData, width, height, isDxt5: true);
+                return DecodeKyaruDXT5(encodedData, width, height);
 
             case FmtDXT1Crunched:
-                return DecodeKyaruDXTCrunched(encodedData, width, height, isDxt5: false);
+                return DecodeBC1Crunched(encodedData, width, height);
 
             case FmtDXT5Crunched:
-                return DecodeKyaruDXTCrunched(encodedData, width, height, isDxt5: true);
+                return DecodeKyaruDXT5Crunched(encodedData, width, height);
 
             case FmtETC2_RGB:
                 return DecodeKyaruETC2(encodedData, width, height, hasAlpha: false);
@@ -381,17 +381,116 @@ internal static class TextureCodec
         return rgba;
     }
 
-    private static byte[] DecodeKyaruDXT(byte[] encodedData, int width, int height, bool isDxt5)
+    private static byte[] DecodeBC1(byte[] encodedData, int width, int height)
+    {
+        int blocksWide = (width + 3) / 4;
+        int blocksHigh = (height + 3) / 4;
+        int expected = checked(blocksWide * blocksHigh * 8);
+        if (encodedData.Length < expected)
+            throw new InvalidDataException(
+                $"DXT1 data too small: got {encodedData.Length}, expected at least {expected}");
+
+        var rgba = new byte[checked(width * height * 4)];
+        Span<byte> colorsR = stackalloc byte[4];
+        Span<byte> colorsG = stackalloc byte[4];
+        Span<byte> colorsB = stackalloc byte[4];
+        Span<byte> colorsA = stackalloc byte[4];
+
+        int blockIndex = 0;
+        for (int by = 0; by < blocksHigh; by++)
+        {
+            for (int bx = 0; bx < blocksWide; bx++)
+            {
+                int off = blockIndex * 8;
+                blockIndex++;
+
+                int c0 = encodedData[off] | (encodedData[off + 1] << 8);
+                int c1 = encodedData[off + 2] | (encodedData[off + 3] << 8);
+                uint indices = (uint)(encodedData[off + 4]
+                    | (encodedData[off + 5] << 8)
+                    | (encodedData[off + 6] << 16)
+                    | (encodedData[off + 7] << 24));
+
+                Unpack565(c0, out byte r0, out byte g0, out byte b0);
+                Unpack565(c1, out byte r1, out byte g1, out byte b1);
+
+                colorsR[0] = r0; colorsG[0] = g0; colorsB[0] = b0; colorsA[0] = 255;
+                colorsR[1] = r1; colorsG[1] = g1; colorsB[1] = b1; colorsA[1] = 255;
+
+                if (c0 > c1)
+                {
+                    colorsR[2] = (byte)((2 * r0 + r1) / 3);
+                    colorsG[2] = (byte)((2 * g0 + g1) / 3);
+                    colorsB[2] = (byte)((2 * b0 + b1) / 3);
+                    colorsA[2] = 255;
+
+                    colorsR[3] = (byte)((r0 + 2 * r1) / 3);
+                    colorsG[3] = (byte)((g0 + 2 * g1) / 3);
+                    colorsB[3] = (byte)((b0 + 2 * b1) / 3);
+                    colorsA[3] = 255;
+                }
+                else
+                {
+                    colorsR[2] = (byte)((r0 + r1) / 2);
+                    colorsG[2] = (byte)((g0 + g1) / 2);
+                    colorsB[2] = (byte)((b0 + b1) / 2);
+                    colorsA[2] = 255;
+
+                    colorsR[3] = 0; colorsG[3] = 0; colorsB[3] = 0; colorsA[3] = 0;
+                }
+
+                for (int py = 0; py < 4; py++)
+                {
+                    int y = by * 4 + py;
+                    if (y >= height) continue;
+
+                    for (int px = 0; px < 4; px++)
+                    {
+                        int x = bx * 4 + px;
+                        if (x >= width) continue;
+
+                        int shift = (py * 4 + px) * 2;
+                        int sel = (int)((indices >> shift) & 0x3);
+
+                        int dst = (y * width + x) * 4;
+                        rgba[dst + 0] = colorsR[sel];
+                        rgba[dst + 1] = colorsG[sel];
+                        rgba[dst + 2] = colorsB[sel];
+                        rgba[dst + 3] = colorsA[sel];
+                    }
+                }
+            }
+        }
+
+        return rgba;
+    }
+
+    private static void Unpack565(int value, out byte r, out byte g, out byte b)
+    {
+        int r5 = (value >> 11) & 0x1F;
+        int g6 = (value >> 5) & 0x3F;
+        int b5 = value & 0x1F;
+        r = (byte)((r5 << 3) | (r5 >> 2));
+        g = (byte)((g6 << 2) | (g6 >> 4));
+        b = (byte)((b5 << 3) | (b5 >> 2));
+    }
+
+    private static byte[] DecodeBC1Crunched(byte[] encodedData, int width, int height)
+    {
+        byte[]? unpacked = TextureDecoder.UnpackUnityCrunch(encodedData);
+        if (unpacked == null || unpacked.Length == 0)
+            throw new InvalidDataException("Kyaru Texture2DDecoder failed to unpack UnityCrunch DXT1 data");
+
+        return DecodeBC1(unpacked, width, height);
+    }
+
+    private static byte[] DecodeKyaruDXT5(byte[] encodedData, int width, int height)
     {
         int outputSize = checked(width * height * 4);
         var rgba = new byte[outputSize];
 
-        bool ok = isDxt5
-            ? TextureDecoder.DecodeDXT5(encodedData, width, height, rgba)
-            : TextureDecoder.DecodeDXT1(encodedData, width, height, rgba);
-
-        if (!ok)
-            throw new InvalidDataException($"Kyaru Texture2DDecoder failed to decode {(isDxt5 ? "DXT5" : "DXT1")}");
+        if (!TextureDecoder.DecodeDXT5(encodedData, width, height, rgba))
+            throw new InvalidDataException("Kyaru Texture2DDecoder failed to decode DXT5");
 
         SwapRedBlue(rgba);
         return rgba;
@@ -405,15 +504,15 @@ internal static class TextureCodec
         }
     }
 
-    private static byte[] DecodeKyaruDXTCrunched(byte[] encodedData, int width, int height, bool isDxt5)
+    private static byte[] DecodeKyaruDXT5Crunched(byte[] encodedData, int width, int height)
     {
         byte[]? unpacked = TextureDecoder.UnpackUnityCrunch(encodedData);
         if (unpacked == null || unpacked.Length == 0)
-            throw new InvalidDataException(
-                $"Kyaru Texture2DDecoder failed to unpack UnityCrunch {(isDxt5 ? "DXT5" : "DXT1")} data");
+            throw new InvalidDataException("Kyaru Texture2DDecoder failed to unpack UnityCrunch DXT5 data");
 
-        return DecodeKyaruDXT(unpacked, width, height, isDxt5);
+        return DecodeKyaruDXT5(unpacked, width, height);
     }
+
 
     private static byte[] DecodeKyaruETC2(byte[] encodedData, int width, int height, bool hasAlpha)
     {
