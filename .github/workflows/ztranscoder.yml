@@ -58,7 +58,7 @@ jobs:
           gh release download "${{ inputs.release_tag }}" \
             --repo "${{ github.repository }}" \
             --pattern "input.bundle" \
-            --output input.bundle
+            --output input.bundle || true
 
       - name: Fetch original.bundle from the queue release
         env:
@@ -69,16 +69,37 @@ jobs:
             --pattern "original.bundle" \
             --output original.bundle || true
 
+      - name: Fetch carra2 mod from the queue release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.carra2" || true
+
       - name: Run ZTranscoder
         env:
           OUTPUT_FORMAT: ${{ inputs.output_format }}
         run: |
           FORMAT="${OUTPUT_FORMAT:-RGBA32}"
-          if [ -f original.bundle ]; then
-            dotnet build/ZTranscoder.dll input.bundle output.bundle --original original.bundle "$FORMAT"
+          CARRA2_FILE=$(ls -- *.carra2 2>/dev/null | head -n1 || true)
+
+          if [ -n "$CARRA2_FILE" ]; then
+            if [ ! -f original.bundle ]; then
+              echo "Found $CARRA2_FILE but no original.bundle on this release - carra2 mode needs one to match against." >&2
+              exit 1
+            fi
+            dotnet build/ZTranscoder.dll carra2 "$CARRA2_FILE" original.bundle output.bundle --new-texture-format "$FORMAT"
+          elif [ -f input.bundle ]; then
+            if [ -f original.bundle ]; then
+              dotnet build/ZTranscoder.dll input.bundle output.bundle --original original.bundle "$FORMAT"
+            else
+              echo "No original.bundle on this release - running without shader restore."
+              dotnet build/ZTranscoder.dll input.bundle output.bundle "$FORMAT"
+            fi
           else
-            echo "No original.bundle on this release - running without shader restore."
-            dotnet build/ZTranscoder.dll input.bundle output.bundle "$FORMAT"
+            echo "Neither input.bundle nor a .carra2 file found on this release - nothing to do." >&2
+            exit 1
           fi
 
       - name: Upload output.bundle back onto the same release

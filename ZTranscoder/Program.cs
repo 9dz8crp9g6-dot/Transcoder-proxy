@@ -38,11 +38,17 @@ internal static class Program
             return TransplantMode.Run(args[1..]);
         }
 
+        if (args.Length > 0 && string.Equals(args[0], "carra2", StringComparison.OrdinalIgnoreCase))
+        {
+            return Carra2Mode.Run(args[1..]);
+        }
+
         if (args.Length < 2)
         {
             Console.Error.WriteLine(
                 "usage: ZTranscoder <input.bundle> <output.bundle> [--original original.bundle] [outputFormat] [classdata.tpk]\n" +
-                "   or: ZTranscoder transplant <original.bundle> <modded.bundle> <output.bundle> [--threshold N] [--dry-run] [--new-texture-format FMT] [classdata.tpk]");
+                "   or: ZTranscoder transplant <original.bundle> <modded.bundle> <output.bundle> [--threshold N] [--dry-run] [--new-texture-format FMT] [classdata.tpk]\n" +
+                "   or: ZTranscoder carra2 <carra2.zip> <original.bundle> <output.bundle> [--new-texture-format FMT] [--dry-run] [classdata.tpk]");
             return 2;
         }
 
