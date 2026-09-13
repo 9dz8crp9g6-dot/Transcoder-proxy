@@ -53,7 +53,7 @@ internal static class TextureCodec
         [FmtASTC_RGBA_8x8] = FootprintType.Footprint8x8,
     };
 
-    private delegate bool KyaruDecodeFunc(byte[] data, int width, int height, byte[] image);
+    private delegate bool KyaruDecodeFunc(ReadOnlySpan<byte> data, int width, int height, Span<byte> image);
 
     private static readonly Dictionary<int, KyaruDecodeFunc> KyaruDecodersByFormat = new()
     {
