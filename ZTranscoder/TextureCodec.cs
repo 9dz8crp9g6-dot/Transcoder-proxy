@@ -53,7 +53,7 @@ internal static class TextureCodec
             }
 
             case FmtDXT1:
-                return DecodeKyaruDXT(encodedData, width, height, isDxt5: false);
+                return DecodeDXT1Managed(encodedData, width, height);
 
             case FmtDXT5:
                 return DecodeKyaruDXT(encodedData, width, height, isDxt5: true);
@@ -126,6 +126,103 @@ internal static class TextureCodec
             rgba[dst + 3] = 255;
         }
         return rgba;
+    }
+
+    private static byte[] DecodeDXT1Managed(byte[] data, int width, int height)
+    {
+        var rgba = new byte[checked(width * height * 4)];
+        int blocksWide = (width + 3) / 4;
+        int blocksHigh = (height + 3) / 4;
+
+        int expected = checked(blocksWide * blocksHigh * 8);
+        if (data.Length < expected)
+            throw new InvalidDataException(
+                $"DXT1 data too small: got {data.Length}, expected at least {expected}");
+
+        for (int by = 0; by < blocksHigh; by++)
+        {
+            for (int bx = 0; bx < blocksWide; bx++)
+            {
+                int blockOffset = (by * blocksWide + bx) * 8;
+
+                ushort c0 = (ushort)(data[blockOffset] | (data[blockOffset + 1] << 8));
+                ushort c1 = (ushort)(data[blockOffset + 2] | (data[blockOffset + 3] << 8));
+                uint indices = (uint)(data[blockOffset + 4]
+                    | (data[blockOffset + 5] << 8)
+                    | (data[blockOffset + 6] << 16)
+                    | (data[blockOffset + 7] << 24));
+
+                Unpack565(c0, out byte r0, out byte g0, out byte b0);
+                Unpack565(c1, out byte r1, out byte g1, out byte b1);
+
+                byte r2, g2, b2, a2, r3, g3, b3, a3;
+                if (c0 > c1)
+                {
+                    r2 = (byte)((2 * r0 + r1) / 3);
+                    g2 = (byte)((2 * g0 + g1) / 3);
+                    b2 = (byte)((2 * b0 + b1) / 3);
+                    a2 = 255;
+                    r3 = (byte)((r0 + 2 * r1) / 3);
+                    g3 = (byte)((g0 + 2 * g1) / 3);
+                    b3 = (byte)((b0 + 2 * b1) / 3);
+                    a3 = 255;
+                }
+                else
+                {
+                    r2 = (byte)((r0 + r1) / 2);
+                    g2 = (byte)((g0 + g1) / 2);
+                    b2 = (byte)((b0 + b1) / 2);
+                    a2 = 255;
+                    r3 = 0;
+                    g3 = 0;
+                    b3 = 0;
+                    a3 = 0;
+                }
+
+                for (int py = 0; py < 4; py++)
+                {
+                    int y = by * 4 + py;
+                    if (y >= height) continue;
+
+                    for (int px = 0; px < 4; px++)
+                    {
+                        int x = bx * 4 + px;
+                        if (x >= width) continue;
+
+                        int pixelIndex = py * 4 + px;
+                        int code = (int)((indices >> (pixelIndex * 2)) & 0x3);
+
+                        byte r, g, b, a;
+                        switch (code)
+                        {
+                            case 0: r = r0; g = g0; b = b0; a = 255; break;
+                            case 1: r = r1; g = g1; b = b1; a = 255; break;
+                            case 2: r = r2; g = g2; b = b2; a = a2; break;
+                            default: r = r3; g = g3; b = b3; a = a3; break;
+                        }
+
+                        int dst = (y * width + x) * 4;
+                        rgba[dst + 0] = r;
+                        rgba[dst + 1] = g;
+                        rgba[dst + 2] = b;
+                        rgba[dst + 3] = a;
+                    }
+                }
+            }
+        }
+
+        return rgba;
+    }
+
+    private static void Unpack565(ushort c, out byte r, out byte g, out byte b)
+    {
+        int r5 = (c >> 11) & 0x1F;
+        int g6 = (c >> 5) & 0x3F;
+        int b5 = c & 0x1F;
+
+        r = (byte)((r5 << 3) | (r5 >> 2));
+        g = (byte)((g6 << 2) | (g6 >> 4));
+        b = (byte)((b5 << 3) | (b5 >> 2));
     }
 
     private static byte[] DecodeKyaruDXT(byte[] encodedData, int width, int height, bool isDxt5)
