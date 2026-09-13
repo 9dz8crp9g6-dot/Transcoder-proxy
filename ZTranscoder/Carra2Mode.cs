@@ -13,6 +13,7 @@ internal static class Carra2Mode
 {
     private const int KindSprite = 4;
     private const int KindTexture2D = 20;
+    private const int KindTexture2DV2 = 6;
 
     private readonly record struct Carra2Entry(string EntryName, long PathId, int Kind, byte[] Payload);
 
@@ -61,7 +62,7 @@ internal static class Carra2Mode
         {
             if (e.Kind == KindSprite)
                 spriteEntries[e.PathId] = e;
-            else if (e.Kind == KindTexture2D)
+            else if (e.Kind == KindTexture2D || e.Kind == KindTexture2DV2)
                 textureEntries[e.PathId] = e;
             else
                 Console.WriteLine($"[carra2] entry '{e.EntryName}': unrecognized kind {e.Kind} - skipped.");
@@ -200,9 +201,12 @@ internal static class Carra2Mode
 
                     try
                     {
-                        if (!TryParseTexturePayload(
-                                kv.Value.Payload, out string texName, out int width, out int height,
-                                out int dataSize, out int format, out byte[] pixelData))
+                        string texName; int width, height, dataSize, format; byte[] pixelData;
+                        bool parsedPayload = kv.Value.Kind == KindTexture2DV2
+                            ? TryParseTexturePayloadV2(kv.Value.Payload, out texName, out width, out height, out dataSize, out format, out pixelData)
+                            : TryParseTexturePayload(kv.Value.Payload, out texName, out width, out height, out dataSize, out format, out pixelData);
+
+                        if (!parsedPayload)
                         {
                             Console.WriteLine(
                                 $"[{dirInfo.Name}] Texture2D PathId {kv.Key} ('{kv.Value.EntryName}'): payload doesn't " +
@@ -402,6 +406,43 @@ internal static class Carra2Mode
         height = ints[3];
         dataSize = ints[4];
         format = ints[6];
+
+        if (width <= 0 || height <= 0 || dataSize <= 0 || dataSize > payload.Length)
+            return false;
+
+        pixelData = new byte[dataSize];
+        Buffer.BlockCopy(payload, payload.Length - dataSize, pixelData, 0, dataSize);
+        return true;
+    }
+
+    private static bool TryParseTexturePayloadV2(
+        byte[] payload, out string name, out int width, out int height,
+        out int dataSize, out int format, out byte[] pixelData)
+    {
+        name = "";
+        width = height = dataSize = format = 0;
+        pixelData = Array.Empty<byte>();
+
+        if (payload.Length < 4)
+            return false;
+
+        int nameLen = BitConverter.ToInt32(payload, 0);
+        if (nameLen < 0 || 4 + nameLen > payload.Length)
+            return false;
+
+        name = Encoding.UTF8.GetString(payload, 4, nameLen);
+        int off = 4 + Pad4(nameLen);
+        if (off + 6 * 4 > payload.Length)
+            return false;
+
+        var ints = new int[6];
+        for (int i = 0; i < 6; i++)
+            ints[i] = BitConverter.ToInt32(payload, off + i * 4);
+
+        width = ints[1];
+        height = ints[2];
+        dataSize = ints[3];
+        format = ints[5];
 
         if (width <= 0 || height <= 0 || dataSize <= 0 || dataSize > payload.Length)
             return false;
