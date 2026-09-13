@@ -20,11 +20,57 @@ internal static class TextureCodec
     public const int FmtASTC_RGBA_6x6 = 50;
     public const int FmtASTC_RGBA_8x8 = 51;
 
+    private const int FmtAlpha8 = 1;
+    private const int FmtARGB4444 = 2;
+    private const int FmtARGB32 = 5;
+    private const int FmtRGB565 = 7;
+    private const int FmtRGBA4444 = 13;
+    private const int FmtBGRA32 = 14;
+    private const int FmtBC6H = 24;
+    private const int FmtBC7 = 25;
+    private const int FmtBC4 = 26;
+    private const int FmtBC5 = 27;
+    private const int FmtDXT1Crunched = 28;
+    private const int FmtPVRTC_RGB2 = 30;
+    private const int FmtPVRTC_RGBA2 = 31;
+    private const int FmtPVRTC_RGB4 = 32;
+    private const int FmtPVRTC_RGBA4 = 33;
+    private const int FmtETC_RGB4 = 34;
+    private const int FmtATC_RGB4 = 35;
+    private const int FmtATC_RGBA8 = 36;
+    private const int FmtEAC_R = 41;
+    private const int FmtEAC_R_SIGNED = 42;
+    private const int FmtETC2_RGBA1 = 46;
+    private const int FmtRG16 = 62;
+    private const int FmtR8 = 63;
+    private const int FmtETC_RGB4Crunched = 64;
+    private const int FmtETC2_RGBA8Crunched = 65;
+
     private static readonly Dictionary<int, FootprintType> AstcFootprintsByFormat = new()
     {
         [FmtASTC_RGBA_4x4] = FootprintType.Footprint4x4,
         [FmtASTC_RGBA_6x6] = FootprintType.Footprint6x6,
         [FmtASTC_RGBA_8x8] = FootprintType.Footprint8x8,
+    };
+
+    private delegate bool KyaruDecodeFunc(byte[] data, int width, int height, byte[] image);
+
+    private static readonly Dictionary<int, KyaruDecodeFunc> KyaruDecodersByFormat = new()
+    {
+        [FmtETC_RGB4] = TextureDecoder.DecodeETC1,
+        [FmtETC2_RGBA1] = TextureDecoder.DecodeETC2A1,
+        [FmtEAC_R] = TextureDecoder.DecodeEACR,
+        [FmtEAC_R_SIGNED] = TextureDecoder.DecodeEACRSigned,
+        [FmtATC_RGB4] = TextureDecoder.DecodeATCRGB4,
+        [FmtATC_RGBA8] = TextureDecoder.DecodeATCRGBA8,
+        [FmtBC4] = TextureDecoder.DecodeBC4,
+        [FmtBC5] = TextureDecoder.DecodeBC5,
+        [FmtBC6H] = TextureDecoder.DecodeBC6,
+        [FmtBC7] = TextureDecoder.DecodeBC7,
+        [FmtPVRTC_RGB2] = (data, w, h, image) => TextureDecoder.DecodePVRTC(data, w, h, image, is2bpp: true),
+        [FmtPVRTC_RGBA2] = (data, w, h, image) => TextureDecoder.DecodePVRTC(data, w, h, image, is2bpp: true),
+        [FmtPVRTC_RGB4] = (data, w, h, image) => TextureDecoder.DecodePVRTC(data, w, h, image, is2bpp: false),
+        [FmtPVRTC_RGBA4] = (data, w, h, image) => TextureDecoder.DecodePVRTC(data, w, h, image, is2bpp: false),
     };
 
     public static string FormatName(int format) => format switch
@@ -55,8 +101,11 @@ internal static class TextureCodec
             case FmtDXT5:
                 return DecodeKyaruDXT(encodedData, width, height, isDxt5: true);
 
+            case FmtDXT1Crunched:
+                return DecodeKyaruDXTCrunched(encodedData, width, height, isDxt5: false);
+
             case FmtDXT5Crunched:
-                return DecodeKyaruDXT5Crunched(encodedData, width, height);
+                return DecodeKyaruDXTCrunched(encodedData, width, height, isDxt5: true);
 
             case FmtETC2_RGB:
                 return DecodeKyaruETC2(encodedData, width, height, hasAlpha: false);
@@ -64,49 +113,225 @@ internal static class TextureCodec
             case FmtETC2_RGBA8:
                 return DecodeKyaruETC2(encodedData, width, height, hasAlpha: true);
 
+            case FmtETC_RGB4Crunched:
+                return DecodeKyaruCrunchedGeneric(encodedData, width, height, TextureDecoder.DecodeETC1, "ETC_RGB4Crunched");
+
+            case FmtETC2_RGBA8Crunched:
+                return DecodeKyaruCrunchedGeneric(encodedData, width, height, TextureDecoder.DecodeETC2A8, "ETC2_RGBA8Crunched");
+
             case FmtRGBA32:
-            {
-                int expected = checked(width * height * 4);
-                if (encodedData.Length < expected)
-                    throw new InvalidDataException(
-                        $"RGBA32 data too small for '{texName}': got {encodedData.Length}, expected at least {expected}");
-                var rgba = new byte[expected];
-                Buffer.BlockCopy(encodedData, 0, rgba, 0, expected);
-                return rgba;
-            }
+                return DecodeRawRgba32(encodedData, width, height, texName);
 
             case FmtRGB24:
                 return DecodeRGB24(encodedData, width, height);
+
+            case FmtBGRA32:
+                return DecodeBgra32(encodedData, width, height, texName);
+
+            case FmtAlpha8:
+                return DecodeAlpha8(encodedData, width, height);
+
+            case FmtR8:
+                return DecodeR8(encodedData, width, height);
+
+            case FmtRG16:
+                return DecodeRG16(encodedData, width, height);
+
+            case FmtRGB565:
+                return DecodeRgb565(encodedData, width, height);
+
+            case FmtARGB32:
+                return DecodeArgb32(encodedData, width, height);
+
+            case FmtARGB4444:
+                return DecodeArgb4444(encodedData, width, height);
+
+            case FmtRGBA4444:
+                return DecodeRgba4444(encodedData, width, height);
         }
 
         if (AstcFootprintsByFormat.TryGetValue(format, out FootprintType footprint))
             return DecodeAstc(encodedData, width, height, footprint, texName);
 
-        return DecodeViaGenericAssetsToolsDecoder(encodedData, width, height, format, texName);
+        if (KyaruDecodersByFormat.TryGetValue(format, out KyaruDecodeFunc? decodeFunc))
+            return DecodeKyaruGeneric(encodedData, width, height, decodeFunc, FormatName(format));
+
+        throw new NotSupportedException(
+            $"TextureCodec has no decoder for format {format} ('{FormatName(format)}', texture '{texName}').");
     }
 
-    private static byte[] DecodeViaGenericAssetsToolsDecoder(byte[] encodedData, int width, int height, int format, string texName)
+    private static byte[] DecodeRawRgba32(byte[] encodedData, int width, int height, string texName)
     {
-        byte[]? bgra;
-        try
-        {
-            bgra = AssetsTools.NET.Texture.TextureFile.GetTextureDataFromBytes(
-                encodedData, (AssetsTools.NET.Texture.TextureFormat)format, width, height);
-        }
-        catch (Exception ex)
-        {
-            throw new NotSupportedException(
-                $"TextureCodec has no dedicated decoder for format {format} ('{FormatName(format)}', texture '{texName}'), " +
-                $"and the generic AssetsTools.NET decoder could not handle it either: {ex.Message}", ex);
-        }
-
         int expected = checked(width * height * 4);
-        if (bgra == null || bgra.Length != expected)
+        if (encodedData.Length < expected)
             throw new InvalidDataException(
-                $"generic decode of format {format} ('{FormatName(format)}', texture '{texName}') produced " +
-                $"{(bgra?.Length ?? 0):N0} bytes, expected {expected:N0}");
+                $"RGBA32 data too small for '{texName}': got {encodedData.Length}, expected at least {expected}");
+        var rgba = new byte[expected];
+        Buffer.BlockCopy(encodedData, 0, rgba, 0, expected);
+        return rgba;
+    }
+
+    private static byte[] DecodeBgra32(byte[] encodedData, int width, int height, string texName)
+    {
+        int expected = checked(width * height * 4);
+        if (encodedData.Length < expected)
+            throw new InvalidDataException(
+                $"BGRA32 data too small for '{texName}': got {encodedData.Length}, expected at least {expected}");
+        var bgra = new byte[expected];
+        Buffer.BlockCopy(encodedData, 0, bgra, 0, expected);
+        return BgraToRgba(bgra);
+    }
+
+    private static byte[] DecodeAlpha8(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        if (data.Length < pixelCount)
+            throw new InvalidDataException($"Alpha8 data too small: got {data.Length}, expected at least {pixelCount}");
+
+        var rgba = new byte[pixelCount * 4];
+        for (int i = 0, dst = 0; i < pixelCount; i++, dst += 4)
+            rgba[dst + 3] = data[i];
+        return rgba;
+    }
+
+    private static byte[] DecodeR8(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        if (data.Length < pixelCount)
+            throw new InvalidDataException($"R8 data too small: got {data.Length}, expected at least {pixelCount}");
+
+        var rgba = new byte[pixelCount * 4];
+        for (int i = 0, dst = 0; i < pixelCount; i++, dst += 4)
+        {
+            rgba[dst + 0] = data[i];
+            rgba[dst + 3] = 255;
+        }
+        return rgba;
+    }
+
+    private static byte[] DecodeRG16(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        int expected = checked(pixelCount * 2);
+        if (data.Length < expected)
+            throw new InvalidDataException($"RG16 data too small: got {data.Length}, expected at least {expected}");
+
+        var rgba = new byte[pixelCount * 4];
+        for (int i = 0, src = 0, dst = 0; i < pixelCount; i++, src += 2, dst += 4)
+        {
+            rgba[dst + 0] = data[src + 0];
+            rgba[dst + 1] = data[src + 1];
+            rgba[dst + 3] = 255;
+        }
+        return rgba;
+    }
+
+    private static byte[] DecodeRgb565(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        int expected = checked(pixelCount * 2);
+        if (data.Length < expected)
+            throw new InvalidDataException($"RGB565 data too small: got {data.Length}, expected at least {expected}");
+
+        var rgba = new byte[pixelCount * 4];
+        for (int i = 0, src = 0, dst = 0; i < pixelCount; i++, src += 2, dst += 4)
+        {
+            ushort c = (ushort)(data[src] | (data[src + 1] << 8));
+            int r5 = (c >> 11) & 0x1F;
+            int g6 = (c >> 5) & 0x3F;
+            int b5 = c & 0x1F;
+            rgba[dst + 0] = (byte)((r5 << 3) | (r5 >> 2));
+            rgba[dst + 1] = (byte)((g6 << 2) | (g6 >> 4));
+            rgba[dst + 2] = (byte)((b5 << 3) | (b5 >> 2));
+            rgba[dst + 3] = 255;
+        }
+        return rgba;
+    }
+
+    private static byte[] DecodeArgb32(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        int expected = checked(pixelCount * 4);
+        if (data.Length < expected)
+            throw new InvalidDataException($"ARGB32 data too small: got {data.Length}, expected at least {expected}");
+
+        var rgba = new byte[expected];
+        for (int i = 0; i < pixelCount; i++)
+        {
+            int src = i * 4;
+            int dst = i * 4;
+            rgba[dst + 0] = data[src + 1];
+            rgba[dst + 1] = data[src + 2];
+            rgba[dst + 2] = data[src + 3];
+            rgba[dst + 3] = data[src + 0];
+        }
+        return rgba;
+    }
+
+    private static byte[] DecodeArgb4444(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        int expected = checked(pixelCount * 2);
+        if (data.Length < expected)
+            throw new InvalidDataException($"ARGB4444 data too small: got {data.Length}, expected at least {expected}");
+
+        var rgba = new byte[pixelCount * 4];
+        for (int i = 0, src = 0, dst = 0; i < pixelCount; i++, src += 2, dst += 4)
+        {
+            ushort c = (ushort)(data[src] | (data[src + 1] << 8));
+            int a4 = (c >> 12) & 0xF;
+            int r4 = (c >> 8) & 0xF;
+            int g4 = (c >> 4) & 0xF;
+            int b4 = c & 0xF;
+            rgba[dst + 0] = (byte)((r4 << 4) | r4);
+            rgba[dst + 1] = (byte)((g4 << 4) | g4);
+            rgba[dst + 2] = (byte)((b4 << 4) | b4);
+            rgba[dst + 3] = (byte)((a4 << 4) | a4);
+        }
+        return rgba;
+    }
+
+    private static byte[] DecodeRgba4444(byte[] data, int width, int height)
+    {
+        int pixelCount = checked(width * height);
+        int expected = checked(pixelCount * 2);
+        if (data.Length < expected)
+            throw new InvalidDataException($"RGBA4444 data too small: got {data.Length}, expected at least {expected}");
+
+        var rgba = new byte[pixelCount * 4];
+        for (int i = 0, src = 0, dst = 0; i < pixelCount; i++, src += 2, dst += 4)
+        {
+            ushort c = (ushort)(data[src] | (data[src + 1] << 8));
+            int r4 = (c >> 12) & 0xF;
+            int g4 = (c >> 8) & 0xF;
+            int b4 = (c >> 4) & 0xF;
+            int a4 = c & 0xF;
+            rgba[dst + 0] = (byte)((r4 << 4) | r4);
+            rgba[dst + 1] = (byte)((g4 << 4) | g4);
+            rgba[dst + 2] = (byte)((b4 << 4) | b4);
+            rgba[dst + 3] = (byte)((a4 << 4) | a4);
+        }
+        return rgba;
+    }
+
+    private static byte[] DecodeKyaruGeneric(byte[] encodedData, int width, int height, KyaruDecodeFunc decodeFunc, string formatLabel)
+    {
+        int outputSize = checked(width * height * 4);
+        var bgra = new byte[outputSize];
+
+        if (!decodeFunc(encodedData, width, height, bgra))
+            throw new InvalidDataException($"Kyaru Texture2DDecoder failed to decode {formatLabel}");
 
         return BgraToRgba(bgra);
+    }
+
+    private static byte[] DecodeKyaruCrunchedGeneric(byte[] encodedData, int width, int height, KyaruDecodeFunc decodeFunc, string formatLabel)
+    {
+        byte[]? unpacked = TextureDecoder.UnpackUnityCrunch(encodedData);
+        if (unpacked == null || unpacked.Length == 0)
+            throw new InvalidDataException($"Kyaru Texture2DDecoder failed to unpack UnityCrunch data for {formatLabel}");
+
+        return DecodeKyaruGeneric(unpacked, width, height, decodeFunc, formatLabel);
     }
 
     public static byte[] EncodeFromRgba32(byte[] rgba32, int width, int height, int outputFormat, string texName)
@@ -169,18 +394,14 @@ internal static class TextureCodec
         return BgraToRgba(bgra);
     }
 
-    private static byte[] DecodeKyaruDXT5Crunched(byte[] encodedData, int width, int height)
+    private static byte[] DecodeKyaruDXTCrunched(byte[] encodedData, int width, int height, bool isDxt5)
     {
         byte[]? unpacked = TextureDecoder.UnpackUnityCrunch(encodedData);
         if (unpacked == null || unpacked.Length == 0)
-            throw new InvalidDataException("Kyaru Texture2DDecoder failed to unpack UnityCrunch DXT5 data");
+            throw new InvalidDataException(
+                $"Kyaru Texture2DDecoder failed to unpack UnityCrunch {(isDxt5 ? "DXT5" : "DXT1")} data");
 
-        int outputSize = checked(width * height * 4);
-        var bgra = new byte[outputSize];
-        if (!TextureDecoder.DecodeDXT5(unpacked, width, height, bgra))
-            throw new InvalidDataException("Kyaru Texture2DDecoder failed to decode unpacked UnityCrunch DXT5 data");
-
-        return BgraToRgba(bgra);
+        return DecodeKyaruDXT(unpacked, width, height, isDxt5);
     }
 
     private static byte[] DecodeKyaruETC2(byte[] encodedData, int width, int height, bool hasAlpha)
